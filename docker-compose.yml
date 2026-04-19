@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
     environment:
       - PORT=3001
-      - CORS_ORIGIN=http://localhost
+      - CORS_ORIGIN=https://connect-four.vishalkumarroy.xyz
       - NODE_ENV=production
     expose:
       - "3001"
@@ -17,10 +17,12 @@ services:
     build:
       context: ./Frontend/connect-four
       dockerfile: Dockerfile
-      args:
-        - VITE_SOCKET_URL=http://localhost
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt/live/connect-four.vishalkumarroy.xyz/fullchain.pem:/etc/nginx/ssl/fullchain.pem:ro
+      - /etc/letsencrypt/live/connect-four.vishalkumarroy.xyz/privkey.pem:/etc/nginx/ssl/privkey.pem:ro
     depends_on:
       - backend
     restart: unless-stopped

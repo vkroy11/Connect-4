@@ -3,7 +3,11 @@ import { io } from 'socket.io-client';
 
 const GameContext = createContext();
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
+// In production, use relative URL so nginx proxies WebSocket to backend.
+// In dev, connect directly to the backend server.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || (
+  import.meta.env.PROD ? '' : 'http://localhost:3001'
+);
 
 const initialState = {
   board: Array(6).fill().map(() => Array(7).fill(null)),
