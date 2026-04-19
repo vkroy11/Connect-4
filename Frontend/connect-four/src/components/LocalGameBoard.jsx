@@ -1,14 +1,12 @@
-import React, { useCallback, useRef, useEffect, useState } from 'react';
-import { useGame } from '../contexts/GameContext';
+import React, { useRef, useEffect, useState } from 'react';
+import { useLocalGame } from '../contexts/LocalGameContext';
 import classNames from 'classnames';
 import Timer from './Timer';
 import GameOverModal from './GameOverModal';
 import { playDropSound, playWinSound, playLoseSound, playDrawSound } from '../utils/sounds';
 
-const GameBoard = () => {
-  const { state, actions } = useGame();
-  const boardRef = useRef(null);
-  const lastMouseEmit = useRef(0);
+const LocalGameBoard = ({ onBack }) => {
+  const { state, actions } = useLocalGame();
   const [hoveredCol, setHoveredCol] = useState(null);
   const prevGameStatus = useRef(state.gameStatus);
   const prevLastMove = useRef(state.lastMove);
@@ -23,47 +21,22 @@ const GameBoard = () => {
 
   useEffect(() => {
     if (prevGameStatus.current === 'playing' && state.gameStatus === 'finished') {
-      if (state.winner === state.socket?.id) {
+      if (state.winner === 'player') {
         playWinSound();
-      } else if (state.winner) {
+      } else if (state.winner === 'computer') {
         playLoseSound();
       } else {
         playDrawSound();
       }
     }
     prevGameStatus.current = state.gameStatus;
-  }, [state.gameStatus, state.winner, state.socket]);
+  }, [state.gameStatus, state.winner]);
 
   const handleColumnClick = (colIndex) => {
     if (!state.isMyTurn || state.gameStatus !== 'playing') return;
     actions.makeMove(colIndex);
   };
 
-  const handleMouseMove = useCallback((e) => {
-    if (!boardRef.current || state.gameStatus !== 'playing') return;
-
-    const now = Date.now();
-    if (now - lastMouseEmit.current < 50) return;
-    lastMouseEmit.current = now;
-
-    const rect = boardRef.current.getBoundingClientRect();
-    const position = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
-
-    actions.emitMouseMove(position);
-  }, [state.gameStatus, actions]);
-
-  useEffect(() => {
-    const board = boardRef.current;
-    if (board) {
-      board.addEventListener('mousemove', handleMouseMove);
-      return () => board.removeEventListener('mousemove', handleMouseMove);
-    }
-  }, [handleMouseMove]);
-
-  // Find the preview row for the hovered column
   const getPreviewRow = (col) => {
     if (col === null) return -1;
     return state.board.findLastIndex(r => !r[col]);
@@ -81,15 +54,15 @@ const GameBoard = () => {
       {/* Game Info */}
       <div className="w-full bg-white rounded-lg shadow-lg p-4">
         <div className="flex justify-between items-center">
-          {/* Player 1 (Red) */}
-          <div className={`flex items-center space-x-4 ${state.playerColor === 'red' ? 'font-bold' : ''}`}>
+          {/* Player (Red) */}
+          <div className={`flex items-center space-x-4 ${state.isMyTurn ? 'font-bold' : ''}`}>
             <div className="w-8 h-8 rounded-full bg-red-500"></div>
             <div>
-              <p className="text-lg">{state.players.find(p => p.color === 'red')?.name || 'Player 1'}</p>
+              <p className="text-lg">{state.playerName || 'You'}</p>
               {state.currentPlayer === 'red' && state.gameStatus === 'playing' && (
                 <Timer
                   duration={30}
-                  isActive={state.isMyTurn && state.playerColor === 'red'}
+                  isActive={state.isMyTurn}
                   onTimeUp={actions.makeRandomMove}
                 />
               )}
@@ -99,21 +72,15 @@ const GameBoard = () => {
           {/* Game Status */}
           <div className="text-center">
             <p className="text-lg font-bold">{state.message}</p>
-            <p className="text-sm text-gray-600">Game ID: {state.gameId}</p>
+            <p className="text-sm text-gray-600">vs Computer ({state.difficulty})</p>
           </div>
 
-          {/* Player 2 (Yellow) */}
-          <div className={`flex items-center space-x-4 ${state.playerColor === 'yellow' ? 'font-bold' : ''}`}>
+          {/* Computer (Yellow) */}
+          <div className={`flex items-center space-x-4 ${!state.isMyTurn && state.gameStatus === 'playing' ? 'font-bold' : ''}`}>
             <div>
-              <p className="text-lg text-right">
-                {state.players.find(p => p.color === 'yellow')?.name || 'Player 2'}
-              </p>
-              {state.currentPlayer === 'yellow' && state.gameStatus === 'playing' && (
-                <Timer
-                  duration={30}
-                  isActive={state.isMyTurn && state.playerColor === 'yellow'}
-                  onTimeUp={actions.makeRandomMove}
-                />
+              <p className="text-lg text-right">Computer</p>
+              {state.isAiThinking && (
+                <p className="text-sm text-gray-500 text-right">Thinking...</p>
               )}
             </div>
             <div className="w-8 h-8 rounded-full bg-yellow-500"></div>
@@ -123,11 +90,8 @@ const GameBoard = () => {
 
       {/* Game Board */}
       <div
-        ref={boardRef}
         className="relative bg-blue-600 p-3 sm:p-4 md:p-6 rounded-xl shadow-xl"
-        style={{
-          transform: 'perspective(1000px) rotateX(10deg)',
-        }}
+        style={{ transform: 'perspective(1000px) rotateX(10deg)' }}
         onMouseLeave={() => setHoveredCol(null)}
       >
         <div className="grid grid-cols-7 gap-1 sm:gap-2 md:gap-3">
@@ -145,13 +109,7 @@ const GameBoard = () => {
                 <div className="absolute inset-0 bg-blue-700 rounded-full"></div>
                 {/* Hover preview */}
                 {!cell && hoveredCol === colIndex && rowIndex === previewRow && state.isMyTurn && state.gameStatus === 'playing' && (
-                  <div className={classNames(
-                    'absolute inset-0 rounded-full opacity-30',
-                    {
-                      'bg-red-500': state.playerColor === 'red',
-                      'bg-yellow-400': state.playerColor === 'yellow',
-                    }
-                  )} />
+                  <div className="absolute inset-0 rounded-full opacity-30 bg-red-500" />
                 )}
                 <div
                   className={classNames(
@@ -171,17 +129,6 @@ const GameBoard = () => {
           ))}
         </div>
 
-        {/* Opponent Mouse Position */}
-        {state.opponentMousePosition && state.gameStatus === 'playing' && (
-          <div
-            className="absolute w-4 h-4 rounded-full bg-gray-500 opacity-50 pointer-events-none transform -translate-x-1/2 -translate-y-1/2 transition-all duration-75"
-            style={{
-              left: `${state.opponentMousePosition.x}px`,
-              top: `${state.opponentMousePosition.y}px`,
-            }}
-          />
-        )}
-
         {/* Board Stand */}
         <div className="absolute -bottom-8 left-0 right-0 h-8 bg-blue-800 rounded-b-xl"></div>
       </div>
@@ -189,17 +136,13 @@ const GameBoard = () => {
       {/* Game Over Modal */}
       {state.gameStatus === 'finished' && (
         <GameOverModal
-          result={
-            state.winner === state.socket?.id ? 'win'
-            : state.winner ? 'lose'
-            : 'draw'
-          }
+          result={state.winner === 'player' ? 'win' : state.winner === 'computer' ? 'lose' : 'draw'}
           onPlayAgain={actions.resetGame}
-          onBackToLobby={actions.resetGame}
+          onBackToLobby={onBack}
         />
       )}
     </div>
   );
 };
 
-export default GameBoard;
+export default LocalGameBoard;

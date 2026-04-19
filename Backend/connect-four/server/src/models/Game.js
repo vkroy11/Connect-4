@@ -10,30 +10,39 @@ class Game {
     this.winner = null;
     this.lastMove = null;
     this.moveHistory = [];
+    this.moveCount = 0;
     this.startTime = null;
-    this.timeouts = new Map(); // Store timeouts for each player
+    this.createdAt = Date.now();
+    this.lastActivityAt = Date.now();
+    this.timeouts = new Map();
+    this.winningCells = null;
   }
 
   addPlayer(player) {
     if (this.players.length >= 2) return false;
-    
-    this.players.push({
+
+    const color = this.players.length === 0 ? 'red' : 'yellow';
+    const newPlayer = {
       id: player.id,
       name: player.name,
-      color: this.players.length === 0 ? 'red' : 'yellow'
-    });
+      color: color
+    };
+
+    this.players.push(newPlayer);
+    this.lastActivityAt = Date.now();
 
     if (this.players.length === 2) {
       this.status = 'playing';
-      this.currentTurn = this.players[0].id;
+      this.currentTurn = this.players.find(p => p.color === 'red').id;
       this.startTime = Date.now();
     }
 
-    return true;
+    return newPlayer;
   }
 
   removePlayer(playerId) {
     this.players = this.players.filter(p => p.id !== playerId);
+    this.lastActivityAt = Date.now();
     if (this.players.length < 2) {
       this.status = 'waiting';
       this.currentTurn = null;
@@ -52,8 +61,10 @@ class Game {
 
     const player = this.players.find(p => p.id === playerId);
     this.board[row][col] = player.color;
-    this.lastMove = { row, col, player: player.color };
+    this.lastMove = { row, col, color: player.color };
+    this.moveCount++;
     this.moveHistory.push({ ...this.lastMove, timestamp: Date.now() });
+    this.lastActivityAt = Date.now();
 
     // Clear timeout for current player
     if (this.timeouts.has(playerId)) {
@@ -62,10 +73,11 @@ class Game {
     }
 
     // Check for win
-    const winner = GameUtils.checkWin(this.board, this.lastMove);
-    if (winner) {
+    const winResult = GameUtils.checkWin(this.board, this.lastMove);
+    if (winResult) {
       this.status = 'finished';
-      this.winner = player;
+      this.winner = playerId;
+      this.winningCells = winResult.cells || null;
       return true;
     }
 
@@ -86,7 +98,6 @@ class Game {
     }
 
     const timeout = setTimeout(() => {
-      // Make random move if time runs out
       const validMoves = GameUtils.getValidMoves(this.board);
       if (validMoves.length > 0) {
         const randomMove = validMoves[Math.floor(Math.random() * validMoves.length)];
@@ -113,7 +124,8 @@ class Game {
       currentTurn: this.currentTurn,
       status: this.status,
       winner: this.winner,
-      lastMove: this.lastMove
+      lastMove: this.lastMove,
+      winningCells: this.winningCells
     };
   }
 
@@ -124,7 +136,10 @@ class Game {
     this.winner = null;
     this.lastMove = null;
     this.moveHistory = [];
+    this.moveCount = 0;
     this.startTime = Date.now();
+    this.lastActivityAt = Date.now();
+    this.winningCells = null;
     this.clearTimeouts();
   }
 }

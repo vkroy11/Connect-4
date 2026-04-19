@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        working-directory: Frontend/connect-four
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: Frontend/connect-four
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: Frontend/connect-four
+        run: npm run build
+
+      - name: Install backend dependencies
+        working-directory: Backend/connect-four/server
+        run: npm ci
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: lint-and-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend Docker image
+        run: docker build -t connect-four-backend ./Backend/connect-four/server
+
+      - name: Build frontend Docker image
+        run: docker build -t connect-four-frontend ./Frontend/connect-four
+
+      - name: Test Docker Compose
+        run: docker compose config

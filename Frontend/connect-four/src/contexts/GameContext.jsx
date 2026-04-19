@@ -1,34 +1,31 @@
-// src/contexts/GameContext.jsx
-import React, { createContext, useContext, useReducer, useEffect } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
 
 const GameContext = createContext();
 
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
+
 const initialState = {
-  // Game board state
   board: Array(6).fill().map(() => Array(7).fill(null)),
   currentPlayer: 'red',
   gameStatus: 'waiting',
   winner: null,
   lastMove: null,
-  
-  // Player information
+  winningCells: null,
+
   playerName: '',
   playerColor: null,
   players: [],
   isMyTurn: false,
-  
-  // Connection state
+
   socket: null,
   gameId: null,
   connected: false,
-  
-  // UI state
+
   opponentMousePosition: null,
   message: null,
   error: null,
-  
-  // Timer state
+
   timeLeft: 30,
 };
 
@@ -86,17 +83,17 @@ function gameReducer(state, action) {
         message: 'Waiting for opponent...',
         error: null,
         players: [{ ...action.payload.player }],
-        playerColor: 'red', // Creator is always red
+        playerColor: 'red',
       };
 
-    case ACTIONS.GAME_START:
+    case ACTIONS.GAME_START: {
       const myPlayer = action.payload.players.find(p => p.id === state.socket?.id);
       const isFirstTurn = action.payload.currentTurn === state.socket?.id;
       return {
         ...state,
         gameStatus: 'playing',
         players: action.payload.players,
-        currentPlayer: 'red', // Game always starts with red
+        currentPlayer: 'red',
         playerColor: myPlayer?.color,
         isMyTurn: isFirstTurn,
         message: isFirstTurn ? 'Your turn!' : "Opponent's turn",
@@ -104,7 +101,9 @@ function gameReducer(state, action) {
         error: null,
         board: Array(6).fill().map(() => Array(7).fill(null)),
         gameId: action.payload.gameId,
+        winningCells: null,
       };
+    }
 
     case ACTIONS.UPDATE_GAME:
       return {
@@ -121,8 +120,11 @@ function gameReducer(state, action) {
       return {
         ...state,
         gameStatus: 'finished',
-        winner: action.payload,
-        message: action.payload === state.socket?.id ? 'You won!' : 'Opponent won!',
+        winner: action.payload.winner,
+        winningCells: action.payload.winningCells || null,
+        board: action.payload.board || state.board,
+        lastMove: action.payload.lastMove || state.lastMove,
+        message: action.payload.winner === state.socket?.id ? 'You won!' : 'Opponent won!',
         isMyTurn: false,
       };
 
@@ -130,6 +132,8 @@ function gameReducer(state, action) {
       return {
         ...state,
         gameStatus: 'finished',
+        board: action.payload?.board || state.board,
+        lastMove: action.payload?.lastMove || state.lastMove,
         message: 'Game ended in a draw!',
         isMyTurn: false,
       };
@@ -170,11 +174,12 @@ function gameReducer(state, action) {
 
 export function GameProvider({ children }) {
   const [state, dispatch] = useReducer(gameReducer, initialState);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   // Socket connection
   useEffect(() => {
-    console.log('Initializing socket connection...');
-    const socket = io('http://localhost:3001', {
+    const socket = io(SOCKET_URL, {
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -182,12 +187,10 @@ export function GameProvider({ children }) {
     });
 
     socket.on('connect', () => {
-      console.log('Connected to server:', socket.id);
       dispatch({ type: ACTIONS.INITIALIZE_SOCKET, payload: socket });
     });
 
-    socket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error);
+    socket.on('connect_error', () => {
       dispatch({
         type: ACTIONS.SET_ERROR,
         payload: 'Unable to connect to game server. Please try again.',
@@ -195,27 +198,23 @@ export function GameProvider({ children }) {
     });
 
     socket.on('error', (error) => {
-      console.error('Socket error:', error);
       dispatch({ type: ACTIONS.SET_ERROR, payload: error });
     });
 
     socket.on('gameCreated', (gameState) => {
-      console.log('Game created:', gameState);
       dispatch({ type: ACTIONS.GAME_CREATED, payload: gameState });
     });
 
     socket.on('gameStart', (gameState) => {
-      console.log('Game started:', gameState);
       dispatch({ type: ACTIONS.GAME_START, payload: gameState });
     });
 
     socket.on('moveMade', (moveData) => {
-      console.log('Move made:', moveData);
       if (moveData.gameStatus === 'finished') {
         if (moveData.winner) {
-          dispatch({ type: ACTIONS.GAME_WIN, payload: moveData.winner });
+          dispatch({ type: ACTIONS.GAME_WIN, payload: moveData });
         } else {
-          dispatch({ type: ACTIONS.GAME_DRAW });
+          dispatch({ type: ACTIONS.GAME_DRAW, payload: moveData });
         }
       } else {
         dispatch({ type: ACTIONS.UPDATE_GAME, payload: moveData });
@@ -235,32 +234,10 @@ export function GameProvider({ children }) {
     };
   }, []);
 
-  // Timer management
-  useEffect(() => {
-    let timerInterval;
-    if (state.gameStatus === 'playing' && state.isMyTurn && state.timeLeft > 0) {
-      timerInterval = setInterval(() => {
-        dispatch({ type: ACTIONS.UPDATE_TIMER, payload: state.timeLeft - 1 });
-      }, 1000);
-    }
-
-    return () => {
-      if (timerInterval) {
-        clearInterval(timerInterval);
-      }
-    };
-  }, [state.gameStatus, state.isMyTurn, state.timeLeft]);
-
-  // Auto random move when timer expires
-  useEffect(() => {
-    if (state.timeLeft === 0 && state.isMyTurn && state.gameStatus === 'playing') {
-      makeRandomMove();
-    }
-  }, [state.timeLeft]);
-
-  // Game Actions
-  const createGame = (playerName) => {
-    if (!state.socket) {
+  // Game Actions - use stateRef to avoid stale closures
+  const createGame = useCallback((playerName) => {
+    const s = stateRef.current;
+    if (!s.socket) {
       dispatch({
         type: ACTIONS.SET_ERROR,
         payload: 'No connection to game server. Please refresh the page.',
@@ -277,13 +254,13 @@ export function GameProvider({ children }) {
     }
 
     const gameId = Math.random().toString(36).substring(2, 8).toUpperCase();
-    console.log('Creating game with ID:', gameId);
     dispatch({ type: ACTIONS.SET_PLAYER_NAME, payload: playerName });
-    state.socket.emit('createGame', { gameId, playerName });
-  };
+    s.socket.emit('createGame', { gameId, playerName });
+  }, []);
 
-  const joinGame = (gameId, playerName) => {
-    if (!state.socket) {
+  const joinGame = useCallback((gameId, playerName) => {
+    const s = stateRef.current;
+    if (!s.socket) {
       dispatch({
         type: ACTIONS.SET_ERROR,
         payload: 'No connection to game server. Please refresh the page.',
@@ -299,77 +276,73 @@ export function GameProvider({ children }) {
       return;
     }
 
-    console.log('Joining game:', gameId);
     dispatch({ type: ACTIONS.SET_PLAYER_NAME, payload: playerName });
-    state.socket.emit('joinGame', { gameId: gameId.toUpperCase(), playerName });
-  };
+    s.socket.emit('joinGame', { gameId: gameId.toUpperCase(), playerName });
+  }, []);
 
-  const makeMove = (col) => {
-    if (!state.isMyTurn || state.gameStatus !== 'playing') {
-      console.log('Not your turn or game not playing', { 
-        isMyTurn: state.isMyTurn, 
-        gameStatus: state.gameStatus 
-      });
-      return;
-    }
+  const makeMove = useCallback((col) => {
+    const s = stateRef.current;
+    if (!s.isMyTurn || s.gameStatus !== 'playing') return;
 
-    const row = state.board.findLastIndex(row => !row[col]);
-    if (row === -1) return; // Column is full
+    const row = s.board.findLastIndex(r => !r[col]);
+    if (row === -1) return;
 
-    console.log('Making move:', { row, col, color: state.playerColor });
-    state.socket.emit('makeMove', {
-      gameId: state.gameId,
-      move: { 
-        row, 
+    s.socket.emit('makeMove', {
+      gameId: s.gameId,
+      move: {
+        row,
         col,
-        player: state.playerColor,
-        currentTurn: state.socket.id
+        player: s.playerColor,
+        currentTurn: s.socket.id
       }
     });
-  };
+  }, []);
 
-  const makeRandomMove = () => {
-    if (!state.isMyTurn || state.gameStatus !== 'playing') return;
+  const makeRandomMove = useCallback(() => {
+    const s = stateRef.current;
+    if (!s.isMyTurn || s.gameStatus !== 'playing') return;
 
     const validMoves = [];
     for (let col = 0; col < 7; col++) {
-      const row = state.board.findLastIndex(row => !row[col]);
+      const row = s.board.findLastIndex(r => !r[col]);
       if (row !== -1) validMoves.push({ row, col });
     }
 
     if (validMoves.length > 0) {
       const { row, col } = validMoves[Math.floor(Math.random() * validMoves.length)];
-      state.socket.emit('makeMove', {
-        gameId: state.gameId,
-        move: { 
-          row, 
+      s.socket.emit('makeMove', {
+        gameId: s.gameId,
+        move: {
+          row,
           col,
-          player: state.playerColor,
-          currentTurn: state.socket.id
+          player: s.playerColor,
+          currentTurn: s.socket.id
         }
       });
     }
-  };
+  }, []);
 
-  const emitMouseMove = (position) => {
-    if (state.gameStatus === 'playing' && state.gameId && state.socket) {
-      state.socket.emit('mouseMove', {
-        gameId: state.gameId,
+  const emitMouseMove = useCallback((position) => {
+    const s = stateRef.current;
+    if (s.gameStatus === 'playing' && s.gameId && s.socket) {
+      s.socket.emit('mouseMove', {
+        gameId: s.gameId,
         position
       });
     }
-  };
+  }, []);
 
-  const resetGame = () => {
-    if (state.gameId && state.socket) {
-      state.socket.emit('resetGame', { gameId: state.gameId });
+  const resetGame = useCallback(() => {
+    const s = stateRef.current;
+    if (s.gameId && s.socket) {
+      s.socket.emit('resetGame', { gameId: s.gameId });
     }
     dispatch({ type: ACTIONS.RESET_GAME });
-  };
+  }, []);
 
-  const clearError = () => {
+  const clearError = useCallback(() => {
     dispatch({ type: ACTIONS.CLEAR_ERROR });
-  };
+  }, []);
 
   const value = {
     state,
