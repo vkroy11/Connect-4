@@ -1,7 +1,34 @@
 import React from 'react';
 
-const GameOverModal = ({ result, onPlayAgain, onBackToLobby }) => {
-  // result: 'win' | 'lose' | 'draw'
+/**
+ * Props:
+ *  - result: 'win' | 'lose' | 'draw'
+ *  - onPlayAgain: () => void
+ *  - onBackToLobby: () => void
+ *  - playAgainDisabled?: boolean    (e.g. opponent has left the room)
+ *  - playAgainDisabledReason?: string  (shown under the button)
+ *  - playAgainState?: 'idle' | 'pending' | 'requested' | 'declined'
+ *  - playAgainRequesterName?: string
+ *  - onAcceptPlayAgain?: () => void
+ *  - onDeclinePlayAgain?: () => void
+ *  - onDismissPlayAgainNotice?: () => void
+ *  - playAgainLabel?: string         (override the primary button label)
+ *  - slowAnimation?: boolean         (use the slow win animation)
+ */
+const GameOverModal = ({
+  result,
+  onPlayAgain,
+  onBackToLobby,
+  playAgainDisabled = false,
+  playAgainDisabledReason = null,
+  playAgainState = 'idle',
+  playAgainRequesterName = null,
+  onAcceptPlayAgain,
+  onDeclinePlayAgain,
+  onDismissPlayAgainNotice,
+  playAgainLabel = 'Play Again',
+  slowAnimation = false,
+}) => {
   const config = {
     win: {
       title: 'You Win!',
@@ -43,25 +70,76 @@ const GameOverModal = ({ result, onPlayAgain, onBackToLobby }) => {
 
   const c = config[result] || config.draw;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden animate-modal-pop">
-        {/* Colored header */}
-        <div className={`bg-gradient-to-r ${c.bgGradient} p-6 flex flex-col items-center`}>
-          <div className={`${c.iconBg} ${c.iconColor} rounded-full p-4 mb-3`}>
-            {c.icon}
-          </div>
-          <h2 className="text-3xl font-extrabold text-white">{c.title}</h2>
-          <p className="text-white/80 text-sm mt-1">{c.subtitle}</p>
-        </div>
+  const backdropAnim = slowAnimation ? 'animate-fade-in-slow' : 'animate-fade-in';
+  const modalAnim = slowAnimation ? 'animate-modal-slow' : 'animate-modal-pop';
 
-        {/* Buttons */}
-        <div className="p-6 space-y-3">
+  // Body content varies based on rematch negotiation state.
+  const renderBody = () => {
+    if (playAgainState === 'requested') {
+      return (
+        <div className="p-6 space-y-4">
+          <div className="text-center">
+            <p className="text-gray-800 font-semibold">
+              {playAgainRequesterName || 'Opponent'} wants a rematch.
+            </p>
+            <p className="text-sm text-gray-500 mt-1">Accept to start a new game in this room.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={onAcceptPlayAgain}
+              className="bg-gradient-to-r from-green-500 to-emerald-600 text-white py-3 px-4 rounded-lg font-semibold hover:opacity-90 transition-all transform hover:scale-105"
+            >
+              Accept
+            </button>
+            <button
+              onClick={onDeclinePlayAgain}
+              className="bg-gray-100 text-gray-700 py-3 px-4 rounded-lg font-semibold hover:bg-gray-200 transition-all"
+            >
+              Decline
+            </button>
+          </div>
           <button
-            onClick={onPlayAgain}
+            onClick={onBackToLobby}
+            className="w-full text-sm text-gray-500 hover:text-gray-700 underline"
+          >
+            Back to lobby
+          </button>
+        </div>
+      );
+    }
+
+    if (playAgainState === 'pending') {
+      return (
+        <div className="p-6 space-y-3">
+          <div className="text-center">
+            <div className="inline-flex items-center space-x-2 text-blue-600">
+              <span className="w-3 h-3 rounded-full border-2 border-blue-300 border-t-blue-600 animate-spin" />
+              <span className="font-semibold">Waiting for opponent to accept…</span>
+            </div>
+            <p className="text-sm text-gray-500 mt-2">They'll see your rematch request now.</p>
+          </div>
+          <button
+            onClick={onBackToLobby}
+            className="w-full bg-gray-100 text-gray-700 py-3 px-4 rounded-lg font-semibold hover:bg-gray-200 transition-all"
+          >
+            Cancel & back to lobby
+          </button>
+        </div>
+      );
+    }
+
+    if (playAgainState === 'declined') {
+      return (
+        <div className="p-6 space-y-3">
+          <div className="text-center">
+            <p className="text-gray-800 font-semibold">Opponent declined the rematch.</p>
+            <p className="text-sm text-gray-500 mt-1">You can head back to the lobby.</p>
+          </div>
+          <button
+            onClick={onDismissPlayAgainNotice || onBackToLobby}
             className={`w-full bg-gradient-to-r ${c.bgGradient} text-white py-3 px-4 rounded-lg font-semibold hover:opacity-90 transition-all transform hover:scale-105`}
           >
-            Play Again
+            OK
           </button>
           <button
             onClick={onBackToLobby}
@@ -70,6 +148,47 @@ const GameOverModal = ({ result, onPlayAgain, onBackToLobby }) => {
             Back to Lobby
           </button>
         </div>
+      );
+    }
+
+    // Default idle state.
+    return (
+      <div className="p-6 space-y-3">
+        <button
+          onClick={onPlayAgain}
+          disabled={playAgainDisabled}
+          className={`w-full bg-gradient-to-r ${c.bgGradient} text-white py-3 px-4 rounded-lg font-semibold transition-all transform ${
+            playAgainDisabled
+              ? 'opacity-50 cursor-not-allowed'
+              : 'hover:opacity-90 hover:scale-105'
+          }`}
+        >
+          {playAgainLabel}
+        </button>
+        {playAgainDisabled && playAgainDisabledReason && (
+          <p className="text-xs text-center text-gray-500 -mt-1">{playAgainDisabledReason}</p>
+        )}
+        <button
+          onClick={onBackToLobby}
+          className="w-full bg-gray-100 text-gray-700 py-3 px-4 rounded-lg font-semibold hover:bg-gray-200 transition-all"
+        >
+          Back to Lobby
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm ${backdropAnim}`}>
+      <div className={`bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden ${modalAnim}`}>
+        <div className={`bg-gradient-to-r ${c.bgGradient} p-6 flex flex-col items-center`}>
+          <div className={`${c.iconBg} ${c.iconColor} rounded-full p-4 mb-3`}>
+            {c.icon}
+          </div>
+          <h2 className="text-3xl font-extrabold text-white">{c.title}</h2>
+          <p className="text-white/80 text-sm mt-1">{c.subtitle}</p>
+        </div>
+        {renderBody()}
       </div>
     </div>
   );

@@ -3,13 +3,19 @@ import { useLocalGame } from '../contexts/LocalGameContext';
 import classNames from 'classnames';
 import Timer from './Timer';
 import GameOverModal from './GameOverModal';
+import Confetti from './Confetti';
 import { playDropSound, playWinSound, playLoseSound, playDrawSound } from '../utils/sounds';
+
+const WIN_REVEAL_DELAY_MS = 3500;
 
 const LocalGameBoard = ({ onBack }) => {
   const { state, actions } = useLocalGame();
   const [hoveredCol, setHoveredCol] = useState(null);
   const prevGameStatus = useRef(state.gameStatus);
   const prevLastMove = useRef(state.lastMove);
+
+  const [showEndModal, setShowEndModal] = useState(false);
+  const [showConfetti, setShowConfetti] = useState(false);
 
   // Sound effects
   useEffect(() => {
@@ -32,6 +38,25 @@ const LocalGameBoard = ({ onBack }) => {
     prevGameStatus.current = state.gameStatus;
   }, [state.gameStatus, state.winner]);
 
+  // Delay the modal so the user sees the winning four + confetti first.
+  useEffect(() => {
+    if (state.gameStatus !== 'finished') {
+      setShowEndModal(false);
+      setShowConfetti(false);
+      return;
+    }
+
+    // Only fire confetti for the human player's wins (keeps it celebratory).
+    if (state.winner === 'player') setShowConfetti(true);
+
+    const t = setTimeout(() => {
+      setShowEndModal(true);
+      setTimeout(() => setShowConfetti(false), 2000);
+    }, WIN_REVEAL_DELAY_MS);
+
+    return () => clearTimeout(t);
+  }, [state.gameStatus, state.winner]);
+
   const handleColumnClick = (colIndex) => {
     if (!state.isMyTurn || state.gameStatus !== 'playing') return;
     actions.makeMove(colIndex);
@@ -48,6 +73,8 @@ const LocalGameBoard = ({ onBack }) => {
     if (!state.winningCells) return false;
     return state.winningCells.some(c => c.row === row && c.col === col);
   };
+
+  const result = state.winner === 'player' ? 'win' : state.winner === 'computer' ? 'lose' : 'draw';
 
   return (
     <div className="flex flex-col items-center space-y-8 max-w-4xl mx-auto p-4">
@@ -120,7 +147,7 @@ const LocalGameBoard = ({ onBack }) => {
                       'bg-red-500': cell === 'red',
                       'bg-yellow-400': cell === 'yellow',
                       'animate-drop': cell && state.lastMove?.row === rowIndex && state.lastMove?.col === colIndex,
-                      'ring-4 ring-white animate-pulse': isWinningCell(rowIndex, colIndex)
+                      'ring-4 ring-white animate-win-pulse z-10': isWinningCell(rowIndex, colIndex)
                     }
                   )}
                 />
@@ -133,10 +160,17 @@ const LocalGameBoard = ({ onBack }) => {
         <div className="absolute -bottom-8 left-0 right-0 h-8 bg-blue-800 rounded-b-xl"></div>
       </div>
 
-      {/* Game Over Modal */}
-      {state.gameStatus === 'finished' && (
+      {/* Confetti only on a player win */}
+      {showConfetti && state.winner === 'player' && <Confetti />}
+
+      {/* Game Over Modal — delayed so the winning four registers first.
+          In computer mode, "Play Again" restarts a fresh match at the same
+          difficulty (LocalGameContext's RESET_GAME preserves difficulty). */}
+      {state.gameStatus === 'finished' && showEndModal && (
         <GameOverModal
-          result={state.winner === 'player' ? 'win' : state.winner === 'computer' ? 'lose' : 'draw'}
+          result={result}
+          slowAnimation
+          playAgainLabel={`Play Again (${state.difficulty})`}
           onPlayAgain={actions.resetGame}
           onBackToLobby={onBack}
         />

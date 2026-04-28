@@ -1,5 +1,7 @@
 const GameUtils = require('../utils/gameUtils');
 
+const TURN_DURATION_MS = 30000;
+
 class Game {
   constructor(id) {
     this.id = id;
@@ -16,6 +18,8 @@ class Game {
     this.lastActivityAt = Date.now();
     this.timeouts = new Map();
     this.winningCells = null;
+    this.turnDeadline = null; // epoch ms when current turn auto-expires
+    this.playAgainRequests = new Set(); // socket ids that have asked to play again
   }
 
   addPlayer(player) {
@@ -43,9 +47,13 @@ class Game {
   removePlayer(playerId) {
     this.players = this.players.filter(p => p.id !== playerId);
     this.lastActivityAt = Date.now();
-    if (this.players.length < 2) {
+    this.playAgainRequests.delete(playerId);
+    // Preserve 'finished' status so the win/lose modal stays meaningful for the
+    // remaining player; only fall back to 'waiting' for an in-progress game.
+    if (this.players.length < 2 && this.status === 'playing') {
       this.status = 'waiting';
       this.currentTurn = null;
+      this.turnDeadline = null;
     }
   }
 
@@ -78,24 +86,29 @@ class Game {
       this.status = 'finished';
       this.winner = playerId;
       this.winningCells = winResult.cells || null;
+      this.turnDeadline = null;
       return true;
     }
 
     // Check for draw
     if (GameUtils.isBoardFull(this.board)) {
       this.status = 'finished';
+      this.turnDeadline = null;
       return true;
     }
 
     // Switch turns
     this.currentTurn = this.players.find(p => p.id !== playerId).id;
+    this.turnDeadline = Date.now() + TURN_DURATION_MS;
     return true;
   }
 
-  setMoveTimeout(playerId, callback, duration = 30000) {
+  setMoveTimeout(playerId, callback, duration = TURN_DURATION_MS) {
     if (this.timeouts.has(playerId)) {
       clearTimeout(this.timeouts.get(playerId));
     }
+
+    this.turnDeadline = Date.now() + duration;
 
     const timeout = setTimeout(() => {
       const validMoves = GameUtils.getValidMoves(this.board);
@@ -125,7 +138,8 @@ class Game {
       status: this.status,
       winner: this.winner,
       lastMove: this.lastMove,
-      winningCells: this.winningCells
+      winningCells: this.winningCells,
+      turnDeadline: this.turnDeadline
     };
   }
 
@@ -140,8 +154,11 @@ class Game {
     this.startTime = Date.now();
     this.lastActivityAt = Date.now();
     this.winningCells = null;
+    this.turnDeadline = null;
+    this.playAgainRequests.clear();
     this.clearTimeouts();
   }
 }
 
 module.exports = Game;
+module.exports.TURN_DURATION_MS = TURN_DURATION_MS;

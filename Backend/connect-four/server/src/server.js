@@ -30,6 +30,35 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+function buildMovePayload(game, move) {
+  const state = game.getState();
+  return {
+    board: state.board,
+    move: move,
+    nextPlayer: state.status === 'playing'
+      ? game.players.find(p => p.id === game.currentTurn)?.color
+      : null,
+    nextTurn: game.currentTurn,
+    gameStatus: state.status,
+    winner: state.winner,
+    winningCells: state.winningCells,
+    lastMove: state.lastMove,
+    turnDeadline: state.turnDeadline,
+  };
+}
+
+function startTurnTimer(io, gameId, game, playerId) {
+  game.setMoveTimeout(playerId, (randomMove) => {
+    const payload = buildMovePayload(game, randomMove);
+    io.to(gameId).emit('moveMade', payload);
+
+    // If the auto-move did not end the game, start a timer for the next player.
+    if (payload.gameStatus === 'playing') {
+      startTurnTimer(io, gameId, game, game.currentTurn);
+    }
+  });
+}
+
 // Socket connection handler
 io.on('connection', (socket) => {
   socket.on('createGame', ({ gameId, playerName }) => {
@@ -80,23 +109,9 @@ io.on('connection', (socket) => {
       if (player) {
         socket.join(gameId);
 
-        // Set move timeout for the first player
-        const firstPlayer = game.players.find(p => p.id === game.currentTurn);
-        if (firstPlayer) {
-          game.setMoveTimeout(firstPlayer.id, (randomMove) => {
-            const gameState = game.getState();
-            io.to(gameId).emit('moveMade', {
-              board: gameState.board,
-              move: randomMove,
-              nextPlayer: gameState.status === 'playing'
-                ? game.players.find(p => p.id === game.currentTurn)?.color
-                : null,
-              nextTurn: game.currentTurn,
-              gameStatus: gameState.status,
-              winner: gameState.winner,
-              lastMove: gameState.lastMove
-            });
-          });
+        // Start move timeout for the first player and stamp the deadline.
+        if (game.currentTurn) {
+          startTurnTimer(io, gameId, game, game.currentTurn);
         }
 
         io.to(gameId).emit('gameStart', {
@@ -104,7 +119,8 @@ io.on('connection', (socket) => {
           players: game.players,
           currentTurn: game.currentTurn,
           board: game.board,
-          status: game.status
+          status: game.status,
+          turnDeadline: game.turnDeadline,
         });
       }
     } catch (err) {
@@ -123,37 +139,16 @@ io.on('connection', (socket) => {
       }
 
       if (game.makeMove(socket.id, move.row, move.col)) {
-        const gameState = game.getState();
+        const payload = buildMovePayload(game, move);
 
-        // Set move timeout for next player
-        if (gameState.status === 'playing') {
-          game.setMoveTimeout(game.currentTurn, (randomMove) => {
-            const updatedState = game.getState();
-            io.to(gameId).emit('moveMade', {
-              board: updatedState.board,
-              move: randomMove,
-              nextPlayer: updatedState.status === 'playing'
-                ? game.players.find(p => p.id === game.currentTurn)?.color
-                : null,
-              nextTurn: game.currentTurn,
-              gameStatus: updatedState.status,
-              winner: updatedState.winner,
-              lastMove: updatedState.lastMove
-            });
-          });
+        // Set move timeout for next player (only if the game continues)
+        if (payload.gameStatus === 'playing') {
+          startTurnTimer(io, gameId, game, game.currentTurn);
+          // startTurnTimer mutated turnDeadline; re-read it for the broadcast.
+          payload.turnDeadline = game.turnDeadline;
         }
 
-        io.to(gameId).emit('moveMade', {
-          board: gameState.board,
-          move: move,
-          nextPlayer: gameState.status === 'playing'
-            ? game.players.find(p => p.id === game.currentTurn)?.color
-            : null,
-          nextTurn: game.currentTurn,
-          gameStatus: gameState.status,
-          winner: gameState.winner,
-          lastMove: gameState.lastMove
-        });
+        io.to(gameId).emit('moveMade', payload);
       }
     } catch (err) {
       socket.emit('error', 'Failed to make move');
@@ -164,15 +159,92 @@ io.on('connection', (socket) => {
     socket.to(gameId).emit('opponentMouseMove', position);
   });
 
-  socket.on('resetGame', ({ gameId }) => {
+  socket.on('requestPlayAgain', ({ gameId }) => {
     try {
       const game = games.get(gameId);
-      if (game && game.players.some(p => p.id === socket.id)) {
+      if (!game) return;
+      if (game.status !== 'finished') return;
+      if (game.players.length < 2) {
+        socket.emit('playAgainUnavailable', { reason: 'opponent-left' });
+        return;
+      }
+
+      const requester = game.players.find(p => p.id === socket.id);
+      if (!requester) return;
+
+      game.playAgainRequests.add(socket.id);
+      const opponent = game.players.find(p => p.id !== socket.id);
+
+      // If both players have requested, restart the match.
+      if (opponent && game.playAgainRequests.has(opponent.id)) {
         game.reset();
-        io.to(gameId).emit('gameReset', game.getState());
+        startTurnTimer(io, gameId, game, game.currentTurn);
+        io.to(gameId).emit('gameReset', {
+          ...game.getState(),
+          gameId: game.id,
+          turnDeadline: game.turnDeadline,
+        });
+        return;
+      }
+
+      // Otherwise prompt the opponent and let the requester know we are waiting.
+      socket.emit('playAgainPending');
+      if (opponent) {
+        io.to(opponent.id).emit('playAgainRequested', {
+          fromName: requester.name,
+        });
       }
     } catch (err) {
-      socket.emit('error', 'Failed to reset game');
+      socket.emit('error', 'Failed to request rematch');
+    }
+  });
+
+  socket.on('declinePlayAgain', ({ gameId }) => {
+    try {
+      const game = games.get(gameId);
+      if (!game) return;
+      const opponent = game.players.find(p => p.id !== socket.id);
+      game.playAgainRequests.clear();
+      if (opponent) {
+        io.to(opponent.id).emit('playAgainDeclined');
+      }
+    } catch (err) {
+      // best-effort notification
+    }
+  });
+
+  socket.on('cancelPlayAgain', ({ gameId }) => {
+    try {
+      const game = games.get(gameId);
+      if (!game) return;
+      game.playAgainRequests.delete(socket.id);
+      const opponent = game.players.find(p => p.id !== socket.id);
+      if (opponent) {
+        io.to(opponent.id).emit('playAgainCancelled');
+      }
+    } catch (err) {
+      // best-effort notification
+    }
+  });
+
+  socket.on('leaveGame', ({ gameId }) => {
+    try {
+      const game = games.get(gameId);
+      if (!game) return;
+      const wasMember = game.players.some(p => p.id === socket.id);
+      if (!wasMember) return;
+
+      game.removePlayer(socket.id);
+      socket.leave(gameId);
+
+      if (game.players.length === 0) {
+        game.clearTimeouts();
+        games.delete(gameId);
+      } else {
+        io.to(gameId).emit('playerDisconnected', game.getState());
+      }
+    } catch (err) {
+      // best-effort cleanup
     }
   });
 

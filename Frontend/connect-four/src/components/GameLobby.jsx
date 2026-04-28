@@ -7,7 +7,7 @@ const GameLobby = ({ onPlayComputer }) => {
   const { state, actions } = useGame();
   const [gameId, setGameId] = useState('');
   const [playerName, setPlayerName] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [copyState, setCopyState] = useState('idle'); // 'idle' | 'code' | 'invite' | 'error'
 
   const handleCreateGame = (e) => {
     e.preventDefault();
@@ -17,6 +17,33 @@ const GameLobby = ({ onPlayComputer }) => {
   const handleJoinGame = (e) => {
     e.preventDefault();
     actions.joinGame(gameId, playerName);
+  };
+
+  const inviteText = state.gameId
+    ? `Let's play Connect Four! Join my room with code: ${state.gameId}`
+    : '';
+
+  const copyToClipboard = async (text, kind) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for older browsers / non-secure contexts.
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopyState(kind);
+      setTimeout(() => setCopyState('idle'), 1800);
+    } catch {
+      setCopyState('error');
+      setTimeout(() => setCopyState('idle'), 1800);
+    }
   };
 
   return (
@@ -113,9 +140,52 @@ const GameLobby = ({ onPlayComputer }) => {
           {/* Game ID Display */}
           {state.gameId && (
             <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
-              <p className="text-center text-gray-700">Game ID: <span className="font-bold text-blue-600 text-lg">{state.gameId}</span></p>
-              <p className="text-center text-sm text-gray-500 mt-1">Share this code with your opponent</p>
-              <div className="flex items-center justify-center mt-2 space-x-2">
+              <p className="text-center text-gray-700 mb-2">Game ID</p>
+              <div className="flex items-center justify-center gap-2">
+                <span className="font-bold text-blue-700 text-2xl tracking-wider bg-white px-4 py-2 rounded-lg border border-blue-200 select-all">
+                  {state.gameId}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(state.gameId, 'code')}
+                  title="Copy game code"
+                  aria-label="Copy game code"
+                  className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-blue-600 text-white hover:bg-blue-700 active:scale-95 transition-all"
+                >
+                  {copyState === 'code' ? (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+
+              <p className="text-center text-xs text-gray-500 mt-3">
+                Send this code to a friend so they can join your room.
+              </p>
+
+              <button
+                type="button"
+                onClick={() => copyToClipboard(inviteText, 'invite')}
+                className="mt-3 w-full text-sm bg-white border border-blue-200 text-blue-700 hover:bg-blue-100 transition-colors py-2 px-3 rounded-lg flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4h16v16H4z M4 4l8 8 8-8" />
+                </svg>
+                {copyState === 'invite' ? 'Invite copied!' : 'Copy invite message'}
+              </button>
+
+              {copyState === 'error' && (
+                <p className="text-center text-xs text-red-500 mt-2">
+                  Couldn't copy automatically — please copy the code manually.
+                </p>
+              )}
+
+              <div className="flex items-center justify-center mt-3 space-x-2">
                 <Spinner size="sm" className="border-blue-300 border-t-blue-600" />
                 <span className="text-sm text-blue-600">Waiting for opponent...</span>
               </div>

@@ -3,7 +3,12 @@ import { useGame } from '../contexts/GameContext';
 import classNames from 'classnames';
 import Timer from './Timer';
 import GameOverModal from './GameOverModal';
+import Confetti from './Confetti';
 import { playDropSound, playWinSound, playLoseSound, playDrawSound } from '../utils/sounds';
+
+// Time the player gets to enjoy the winning highlight + confetti before the
+// modal slides in.
+const WIN_REVEAL_DELAY_MS = 3500;
 
 const GameBoard = () => {
   const { state, actions } = useGame();
@@ -12,6 +17,11 @@ const GameBoard = () => {
   const [hoveredCol, setHoveredCol] = useState(null);
   const prevGameStatus = useRef(state.gameStatus);
   const prevLastMove = useRef(state.lastMove);
+
+  // Modal is gated behind a short delay so the user can actually see why the
+  // game ended (winning four highlighted, confetti firing).
+  const [showEndModal, setShowEndModal] = useState(false);
+  const [showConfetti, setShowConfetti] = useState(false);
 
   // Sound effects
   useEffect(() => {
@@ -33,6 +43,36 @@ const GameBoard = () => {
     }
     prevGameStatus.current = state.gameStatus;
   }, [state.gameStatus, state.winner, state.socket]);
+
+  // Win reveal sequence: highlight + confetti first, modal afterwards.
+  useEffect(() => {
+    if (state.gameStatus !== 'finished') {
+      setShowEndModal(false);
+      setShowConfetti(false);
+      return;
+    }
+
+    // Confetti is celebratory: only fire it for the winner so the losing
+    // player isn't taunted, but both players see the highlighted four.
+    const iWon = !!state.winner && state.winner === state.socket?.id;
+    if (iWon) setShowConfetti(true);
+
+    const t = setTimeout(() => {
+      setShowEndModal(true);
+      // Confetti naturally fades; clear after animation completes.
+      setTimeout(() => setShowConfetti(false), 2000);
+    }, WIN_REVEAL_DELAY_MS);
+
+    return () => clearTimeout(t);
+  }, [state.gameStatus, state.winner, state.socket]);
+
+  // If we receive a rematch request from the opponent, show the modal
+  // immediately so the user can respond.
+  useEffect(() => {
+    if (state.playAgainState === 'requested' || state.playAgainState === 'pending' || state.playAgainState === 'declined') {
+      setShowEndModal(true);
+    }
+  }, [state.playAgainState]);
 
   const handleColumnClick = (colIndex) => {
     if (!state.isMyTurn || state.gameStatus !== 'playing') return;
@@ -76,6 +116,17 @@ const GameBoard = () => {
     return state.winningCells.some(c => c.row === row && c.col === col);
   };
 
+  // Derived: result + rematch availability for the modal.
+  const result = state.winner === state.socket?.id ? 'win'
+    : state.winner ? 'lose'
+    : 'draw';
+  const playAgainDisabled = !state.opponentConnected || !state.connected;
+  const playAgainDisabledReason = !state.opponentConnected
+    ? 'Opponent left the room — rematch unavailable.'
+    : !state.connected
+      ? 'Disconnected from server.'
+      : null;
+
   return (
     <div className="flex flex-col items-center space-y-8 max-w-4xl mx-auto p-4">
       {/* Game Info */}
@@ -88,9 +139,8 @@ const GameBoard = () => {
               <p className="text-lg">{state.players.find(p => p.color === 'red')?.name || 'Player 1'}</p>
               {state.currentPlayer === 'red' && state.gameStatus === 'playing' && (
                 <Timer
-                  duration={30}
-                  isActive={state.isMyTurn && state.playerColor === 'red'}
-                  onTimeUp={actions.makeRandomMove}
+                  deadline={state.turnDeadline}
+                  isActive={state.currentPlayer === 'red'}
                 />
               )}
             </div>
@@ -110,9 +160,8 @@ const GameBoard = () => {
               </p>
               {state.currentPlayer === 'yellow' && state.gameStatus === 'playing' && (
                 <Timer
-                  duration={30}
-                  isActive={state.isMyTurn && state.playerColor === 'yellow'}
-                  onTimeUp={actions.makeRandomMove}
+                  deadline={state.turnDeadline}
+                  isActive={state.currentPlayer === 'yellow'}
                 />
               )}
             </div>
@@ -162,7 +211,7 @@ const GameBoard = () => {
                       'bg-red-500': cell === 'red',
                       'bg-yellow-400': cell === 'yellow',
                       'animate-drop': cell && state.lastMove?.row === rowIndex && state.lastMove?.col === colIndex,
-                      'ring-4 ring-white animate-pulse': isWinningCell(rowIndex, colIndex)
+                      'ring-4 ring-white animate-win-pulse z-10': isWinningCell(rowIndex, colIndex)
                     }
                   )}
                 />
@@ -186,16 +235,25 @@ const GameBoard = () => {
         <div className="absolute -bottom-8 left-0 right-0 h-8 bg-blue-800 rounded-b-xl"></div>
       </div>
 
-      {/* Game Over Modal */}
-      {state.gameStatus === 'finished' && (
+      {/* Confetti — only fires for the winning client during the reveal window */}
+      {showConfetti && <Confetti />}
+
+      {/* Game Over Modal — shown after WIN_REVEAL_DELAY_MS so the player can
+          actually see the winning four and the confetti first. */}
+      {state.gameStatus === 'finished' && showEndModal && (
         <GameOverModal
-          result={
-            state.winner === state.socket?.id ? 'win'
-            : state.winner ? 'lose'
-            : 'draw'
-          }
-          onPlayAgain={actions.resetGame}
-          onBackToLobby={actions.resetGame}
+          result={result}
+          slowAnimation
+          playAgainLabel="Play Again"
+          playAgainDisabled={playAgainDisabled}
+          playAgainDisabledReason={playAgainDisabledReason}
+          playAgainState={state.playAgainState}
+          playAgainRequesterName={state.playAgainRequesterName}
+          onPlayAgain={actions.requestPlayAgain}
+          onAcceptPlayAgain={actions.requestPlayAgain}
+          onDeclinePlayAgain={actions.declinePlayAgain}
+          onDismissPlayAgainNotice={actions.dismissPlayAgainNotice}
+          onBackToLobby={actions.leaveGame}
         />
       )}
     </div>

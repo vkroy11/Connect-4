@@ -24,17 +24,27 @@ const initialState = {
 
   socket: null,
   gameId: null,
-  connected: false,
+  connected: true,
 
   opponentMousePosition: null,
   message: null,
   error: null,
 
-  timeLeft: 30,
+  // Server-authoritative deadline (ms epoch) for the active player's turn.
+  turnDeadline: null,
+
+  // Tracks whether the second player is still in the room. False after the
+  // opponent disconnects so the UI can disable rematch controls.
+  opponentConnected: true,
+
+  // Rematch negotiation: 'idle' | 'pending' | 'requested' | 'declined'
+  playAgainState: 'idle',
+  playAgainRequesterName: null,
 };
 
 const ACTIONS = {
   INITIALIZE_SOCKET: 'INITIALIZE_SOCKET',
+  SOCKET_DISCONNECTED: 'SOCKET_DISCONNECTED',
   SET_ERROR: 'SET_ERROR',
   CLEAR_ERROR: 'CLEAR_ERROR',
   SET_PLAYER_NAME: 'SET_PLAYER_NAME',
@@ -45,8 +55,13 @@ const ACTIONS = {
   GAME_DRAW: 'GAME_DRAW',
   OPPONENT_DISCONNECTED: 'OPPONENT_DISCONNECTED',
   UPDATE_MOUSE_POSITION: 'UPDATE_MOUSE_POSITION',
-  UPDATE_TIMER: 'UPDATE_TIMER',
   RESET_GAME: 'RESET_GAME',
+  GAME_RESET_REMOTE: 'GAME_RESET_REMOTE',
+  PLAY_AGAIN_PENDING: 'PLAY_AGAIN_PENDING',
+  PLAY_AGAIN_REQUESTED: 'PLAY_AGAIN_REQUESTED',
+  PLAY_AGAIN_DECLINED: 'PLAY_AGAIN_DECLINED',
+  PLAY_AGAIN_CANCELLED: 'PLAY_AGAIN_CANCELLED',
+  PLAY_AGAIN_RESET_LOCAL: 'PLAY_AGAIN_RESET_LOCAL',
 };
 
 function gameReducer(state, action) {
@@ -57,6 +72,12 @@ function gameReducer(state, action) {
         socket: action.payload,
         connected: true,
         error: null,
+      };
+
+    case ACTIONS.SOCKET_DISCONNECTED:
+      return {
+        ...state,
+        connected: false,
       };
 
     case ACTIONS.SET_ERROR:
@@ -88,6 +109,9 @@ function gameReducer(state, action) {
         error: null,
         players: [{ ...action.payload.player }],
         playerColor: 'red',
+        opponentConnected: true,
+        playAgainState: 'idle',
+        playAgainRequesterName: null,
       };
 
     case ACTIONS.GAME_START: {
@@ -101,11 +125,16 @@ function gameReducer(state, action) {
         playerColor: myPlayer?.color,
         isMyTurn: isFirstTurn,
         message: isFirstTurn ? 'Your turn!' : "Opponent's turn",
-        timeLeft: 30,
+        turnDeadline: action.payload.turnDeadline || null,
         error: null,
         board: Array(6).fill().map(() => Array(7).fill(null)),
         gameId: action.payload.gameId,
         winningCells: null,
+        winner: null,
+        lastMove: null,
+        opponentConnected: true,
+        playAgainState: 'idle',
+        playAgainRequesterName: null,
       };
     }
 
@@ -117,7 +146,7 @@ function gameReducer(state, action) {
         isMyTurn: action.payload.nextTurn === state.socket?.id,
         lastMove: action.payload.lastMove,
         message: action.payload.nextTurn === state.socket?.id ? 'Your turn!' : "Opponent's turn",
-        timeLeft: 30,
+        turnDeadline: action.payload.turnDeadline || null,
       };
 
     case ACTIONS.GAME_WIN:
@@ -130,6 +159,7 @@ function gameReducer(state, action) {
         lastMove: action.payload.lastMove || state.lastMove,
         message: action.payload.winner === state.socket?.id ? 'You won!' : 'Opponent won!',
         isMyTurn: false,
+        turnDeadline: null,
       };
 
     case ACTIONS.GAME_DRAW:
@@ -140,27 +170,40 @@ function gameReducer(state, action) {
         lastMove: action.payload?.lastMove || state.lastMove,
         message: 'Game ended in a draw!',
         isMyTurn: false,
+        turnDeadline: null,
       };
 
-    case ACTIONS.OPPONENT_DISCONNECTED:
+    case ACTIONS.OPPONENT_DISCONNECTED: {
+      // If we are mid-game we drop back to the lobby state. If the game was
+      // already finished, leave the modal open and just disable rematch.
+      const wasFinished = state.gameStatus === 'finished';
+      if (wasFinished) {
+        return {
+          ...state,
+          opponentConnected: false,
+          playAgainState: 'idle',
+          playAgainRequesterName: null,
+          message: 'Opponent left the room.',
+        };
+      }
       return {
         ...state,
         gameStatus: 'waiting',
         message: 'Opponent disconnected. Waiting for new opponent...',
         error: 'Opponent disconnected',
         players: state.players.filter(p => p.id === state.socket?.id),
+        turnDeadline: null,
+        isMyTurn: false,
+        opponentConnected: false,
+        playAgainState: 'idle',
+        playAgainRequesterName: null,
       };
+    }
 
     case ACTIONS.UPDATE_MOUSE_POSITION:
       return {
         ...state,
         opponentMousePosition: action.payload,
-      };
-
-    case ACTIONS.UPDATE_TIMER:
-      return {
-        ...state,
-        timeLeft: action.payload,
       };
 
     case ACTIONS.RESET_GAME:
@@ -169,6 +212,64 @@ function gameReducer(state, action) {
         socket: state.socket,
         connected: state.connected,
         playerName: state.playerName,
+      };
+
+    case ACTIONS.GAME_RESET_REMOTE: {
+      const myPlayer = action.payload.players?.find(p => p.id === state.socket?.id);
+      const isFirstTurn = action.payload.currentTurn === state.socket?.id;
+      return {
+        ...state,
+        board: action.payload.board,
+        gameStatus: 'playing',
+        winner: null,
+        winningCells: null,
+        lastMove: null,
+        currentPlayer: 'red',
+        players: action.payload.players || state.players,
+        playerColor: myPlayer?.color || state.playerColor,
+        isMyTurn: isFirstTurn,
+        turnDeadline: action.payload.turnDeadline || null,
+        message: isFirstTurn ? 'Your turn!' : "Opponent's turn",
+        opponentConnected: true,
+        playAgainState: 'idle',
+        playAgainRequesterName: null,
+        error: null,
+      };
+    }
+
+    case ACTIONS.PLAY_AGAIN_PENDING:
+      return {
+        ...state,
+        playAgainState: 'pending',
+        playAgainRequesterName: null,
+      };
+
+    case ACTIONS.PLAY_AGAIN_REQUESTED:
+      return {
+        ...state,
+        playAgainState: 'requested',
+        playAgainRequesterName: action.payload?.fromName || 'Opponent',
+      };
+
+    case ACTIONS.PLAY_AGAIN_DECLINED:
+      return {
+        ...state,
+        playAgainState: 'declined',
+        playAgainRequesterName: null,
+      };
+
+    case ACTIONS.PLAY_AGAIN_CANCELLED:
+      return {
+        ...state,
+        playAgainState: 'idle',
+        playAgainRequesterName: null,
+      };
+
+    case ACTIONS.PLAY_AGAIN_RESET_LOCAL:
+      return {
+        ...state,
+        playAgainState: 'idle',
+        playAgainRequesterName: null,
       };
 
     default:
@@ -192,6 +293,10 @@ export function GameProvider({ children }) {
 
     socket.on('connect', () => {
       dispatch({ type: ACTIONS.INITIALIZE_SOCKET, payload: socket });
+    });
+
+    socket.on('disconnect', () => {
+      dispatch({ type: ACTIONS.SOCKET_DISCONNECTED });
     });
 
     socket.on('connect_error', () => {
@@ -231,6 +336,30 @@ export function GameProvider({ children }) {
 
     socket.on('playerDisconnected', () => {
       dispatch({ type: ACTIONS.OPPONENT_DISCONNECTED });
+    });
+
+    socket.on('gameReset', (gameState) => {
+      dispatch({ type: ACTIONS.GAME_RESET_REMOTE, payload: gameState });
+    });
+
+    socket.on('playAgainPending', () => {
+      dispatch({ type: ACTIONS.PLAY_AGAIN_PENDING });
+    });
+
+    socket.on('playAgainRequested', (payload) => {
+      dispatch({ type: ACTIONS.PLAY_AGAIN_REQUESTED, payload });
+    });
+
+    socket.on('playAgainDeclined', () => {
+      dispatch({ type: ACTIONS.PLAY_AGAIN_DECLINED });
+    });
+
+    socket.on('playAgainCancelled', () => {
+      dispatch({ type: ACTIONS.PLAY_AGAIN_CANCELLED });
+    });
+
+    socket.on('playAgainUnavailable', () => {
+      dispatch({ type: ACTIONS.PLAY_AGAIN_DECLINED });
     });
 
     return () => {
@@ -302,29 +431,10 @@ export function GameProvider({ children }) {
     });
   }, []);
 
-  const makeRandomMove = useCallback(() => {
-    const s = stateRef.current;
-    if (!s.isMyTurn || s.gameStatus !== 'playing') return;
-
-    const validMoves = [];
-    for (let col = 0; col < 7; col++) {
-      const row = s.board.findLastIndex(r => !r[col]);
-      if (row !== -1) validMoves.push({ row, col });
-    }
-
-    if (validMoves.length > 0) {
-      const { row, col } = validMoves[Math.floor(Math.random() * validMoves.length)];
-      s.socket.emit('makeMove', {
-        gameId: s.gameId,
-        move: {
-          row,
-          col,
-          player: s.playerColor,
-          currentTurn: s.socket.id
-        }
-      });
-    }
-  }, []);
+  // Server is authoritative for the auto-move when a turn expires, so the
+  // client timer no longer needs to fire its own random move. Kept as a no-op
+  // for backwards compatibility with the Timer onTimeUp prop.
+  const makeRandomMove = useCallback(() => {}, []);
 
   const emitMouseMove = useCallback((position) => {
     const s = stateRef.current;
@@ -336,12 +446,32 @@ export function GameProvider({ children }) {
     }
   }, []);
 
-  const resetGame = useCallback(() => {
+  const leaveGame = useCallback(() => {
     const s = stateRef.current;
     if (s.gameId && s.socket) {
-      s.socket.emit('resetGame', { gameId: s.gameId });
+      s.socket.emit('leaveGame', { gameId: s.gameId });
     }
     dispatch({ type: ACTIONS.RESET_GAME });
+  }, []);
+
+  // Multiplayer rematch: requires both players to opt in. Server confirms.
+  const requestPlayAgain = useCallback(() => {
+    const s = stateRef.current;
+    if (!s.socket || !s.gameId) return;
+    if (!s.opponentConnected) return;
+    s.socket.emit('requestPlayAgain', { gameId: s.gameId });
+    dispatch({ type: ACTIONS.PLAY_AGAIN_PENDING });
+  }, []);
+
+  const declinePlayAgain = useCallback(() => {
+    const s = stateRef.current;
+    if (!s.socket || !s.gameId) return;
+    s.socket.emit('declinePlayAgain', { gameId: s.gameId });
+    dispatch({ type: ACTIONS.PLAY_AGAIN_RESET_LOCAL });
+  }, []);
+
+  const dismissPlayAgainNotice = useCallback(() => {
+    dispatch({ type: ACTIONS.PLAY_AGAIN_RESET_LOCAL });
   }, []);
 
   const clearError = useCallback(() => {
@@ -357,7 +487,13 @@ export function GameProvider({ children }) {
       makeMove,
       makeRandomMove,
       emitMouseMove,
-      resetGame,
+      leaveGame,
+      // resetGame is the legacy "send me back to the lobby" action — kept as
+      // an alias for leaveGame so older callers keep working.
+      resetGame: leaveGame,
+      requestPlayAgain,
+      declinePlayAgain,
+      dismissPlayAgainNotice,
       clearError,
     },
   };
