@@ -6,7 +6,11 @@ const config = require('./config/config');
 const Game = require('./models/Game');
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: config.corsOrigin }));
+
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 
 const server = http.createServer(app);
 const io = new Server(server, {
